@@ -1,0 +1,23 @@
+# Reinforcement Learning
+stable-baselines3==2.3.2
+gymnasium==0.29.1
+
+# SUMO and TraCI interface
+eclipse-sumo==1.24.0
+sumolib==1.24.0
+traci==1.24.0
+
+# Deep Learning
+torch==2.3.0
+numpy==1.26.4
+pandas==2.2.2
+
+# Config and utilities
+PyYAML==6.0.2
+matplotlib==3.9.2
+
+# TensorBoard logging
+tensorboard==2.17.1
+
+# Optional (recommended for debugging or plotting)
+tqdm==4.66.5
