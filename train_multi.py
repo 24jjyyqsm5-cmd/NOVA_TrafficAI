@@ -1,145 +1,164 @@
-# train_multi.py
-from __future__ import annotations
+# ======================================================================
+# train_multi.py — Shared PPO Training (All TLS)
+# ======================================================================
+
 import os
 import time
-import numpy as np
+from typing import Any, Dict, List
+
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
-from torch.utils.tensorboard import SummaryWriter
 
 from utils.config import load_config
 from env.multi_env import MultiIntersectionEnv
 
 
-# ------------------------------------------------------------------------------------
-# Utility helpers
-# ------------------------------------------------------------------------------------
-def set_seed(seed: int = 42):
-    """Ensure reproducibility across torch, numpy, and random."""
-    import random, torch
+def _get_cfg(cfg: Dict[str, Any], keys: List[List[str]], default: Any) -> Any:
+    for path in keys:
+        cur: Any = cfg
+        ok = True
+        for k in path:
+            if not isinstance(cur, dict) or k not in cur:
+                ok = False
+                break
+            cur = cur[k]
+        if ok and cur is not None:
+            return cur
+    return default
 
-    np.random.seed(seed)
-    random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
+
+def _get_cfg_int(cfg: Dict[str, Any], keys: List[List[str]], default: int) -> int:
+    v = _get_cfg(cfg, keys, default)
+    try:
+        return int(v)
+    except Exception:
+        return default
 
 
-def ensure_dir(path: str):
+def _get_cfg_float(cfg: Dict[str, Any], keys: List[List[str]], default: float) -> float:
+    v = _get_cfg(cfg, keys, default)
+    try:
+        return float(v)
+    except Exception:
+        return default
+
+
+def _get_cfg_str(cfg: Dict[str, Any], keys: List[List[str]], default: str) -> str:
+    v = _get_cfg(cfg, keys, default)
+    try:
+        return str(v)
+    except Exception:
+        return default
+
+
+def _ensure_dir(path: str) -> str:
     os.makedirs(path, exist_ok=True)
+    return path
 
 
-# ------------------------------------------------------------------------------------
-# Main training routine
-# ------------------------------------------------------------------------------------
 def main():
-    print("🚦 Initializing Multi-Agent PPO Traffic Trainer")
-
-    # ---------------------------------------------------------------
-    # Step 1. Load configuration
-    # ---------------------------------------------------------------
     cfg = load_config()
-    print(f"[INFO] Loaded configuration from {cfg['_config_path']}")
-    print(f"[DEBUG] Full config loaded:\n{cfg}")
 
-    # Set random seed
-    seed = int(cfg["training"].get("seed", 42))
-    set_seed(seed)
-
-    # ---------------------------------------------------------------
-    # Step 2. Build SUMO Environment
-    # ---------------------------------------------------------------
-    print("🌐 Building SUMO environment...")
-
-    def make_env():
-        return MultiIntersectionEnv(cfg)
-
-    env = DummyVecEnv([make_env])
-    print("[INFO] Environment successfully created.")
-
-    # ---------------------------------------------------------------
-    # Step 3. PPO Agent Setup
-    # ---------------------------------------------------------------
-    log_dir = cfg["logging"].get("log_dir", "./runs")
-    ensure_dir(log_dir)
-    writer = SummaryWriter(log_dir=log_dir)
-
-    ppo_params = cfg["ppo"]
-    model = PPO(
-        policy=ppo_params.get("policy", "MlpPolicy"),
-        env=env,
-        learning_rate=ppo_params.get("learning_rate", 3e-4),
-        n_steps=ppo_params.get("n_steps", 2048),
-        batch_size=ppo_params.get("batch_size", 64),
-        n_epochs=ppo_params.get("n_epochs", 10),
-        gamma=ppo_params.get("gamma", 0.99),
-        gae_lambda=ppo_params.get("gae_lambda", 0.95),
-        clip_range=ppo_params.get("clip_range", 0.2),
-        ent_coef=ppo_params.get("ent_coef", 0.01),
-        vf_coef=ppo_params.get("vf_coef", 0.5),
-        max_grad_norm=ppo_params.get("max_grad_norm", 0.5),
-        verbose=1,
-        tensorboard_log=log_dir,
-        seed=seed,
+    log_dir = _ensure_dir(_get_cfg_str(cfg, [["logging", "log_dir"], ["training", "log_dir"]], "./runs"))
+    save_dir = _ensure_dir(
+        _get_cfg_str(cfg, [["logging", "model_dir"], ["training", "save_dir"], ["training", "model_dir"]], "./models")
     )
 
-    # ---------------------------------------------------------------
-    # Step 4. Continuous Training Loop
-    # ---------------------------------------------------------------
-    episodes = int(cfg["training"].get("episodes", 100))
-    steps_per_episode = int(cfg["training"].get("steps_per_episode", 3600))
-    save_interval = int(cfg["training"].get("save_interval", 1))
+    total_timesteps = _get_cfg_int(cfg, [["training", "total_timesteps"]], 200_000)
+    save_freq = _get_cfg_int(cfg, [["training", "save_freq"]], 50_000)
 
-    print("\n──────────────────────────────────────── 🚦 Step 4: Continuous Training ─────────────────────────────────────────\n")
+    learning_rate = _get_cfg_float(cfg, [["training", "learning_rate"]], 3e-4)
+    n_steps = _get_cfg_int(cfg, [["training", "n_steps"]], 2048)
+    batch_size = _get_cfg_int(cfg, [["training", "batch_size"]], 256)
+    gamma = _get_cfg_float(cfg, [["training", "gamma"]], 0.99)
+    gae_lambda = _get_cfg_float(cfg, [["training", "gae_lambda"]], 0.95)
+    clip_range = _get_cfg_float(cfg, [["training", "clip_range"]], 0.2)
+    ent_coef = _get_cfg_float(cfg, [["training", "ent_coef"]], 0.0)
+    vf_coef = _get_cfg_float(cfg, [["training", "vf_coef"]], 0.5)
+    max_grad_norm = _get_cfg_float(cfg, [["training", "max_grad_norm"]], 0.5)
+    verbose = _get_cfg_int(cfg, [["logging", "verbose"], ["training", "verbose"]], 1)
 
-    for ep in range(1, episodes + 1):
-        print(f"🚦 Episode {ep}/{episodes}")
+    run_name = _get_cfg_str(cfg, [["training", "run_name"]], f"ppo_all_tls_{int(time.time())}")
 
-        obs, _ = env.reset()
-        total_reward = 0.0
+    print("=" * 110)
+    print("Shared PPO Training (All TLS)")
+    print("=" * 110)
+    print(f"[INFO] run_name        : {run_name}")
+    print(f"[INFO] log_dir         : {log_dir}")
+    print(f"[INFO] save_dir        : {save_dir}")
+    print(f"[INFO] total_timesteps : {total_timesteps}")
+    print(f"[INFO] save_freq       : {save_freq}")
+    print("=" * 110)
 
-        for step in range(steps_per_episode):
-            action, _ = model.predict(obs, deterministic=False)
-            obs, reward, done, truncated, info = env.step(action)
-            total_reward += float(reward)
+    base_env = MultiIntersectionEnv(cfg)
 
-            if done.any():
-                break
+    obs_dim = int(base_env.observation_space.shape[0])
+    print(f"[INFO] env obs_dim      : {obs_dim}")
 
-            if step % cfg["logging"].get("print_freq", 50) == 0:
-                print(f"[STEP {step:04d}] MeanReward={np.mean(reward):.4f} | WallTime={time.time() % 60:.2f}s")
+    # MultiDiscrete per TLS (should be per-TLS nvec!)
+    if hasattr(base_env.action_space, "nvec"):
+        n_tls = int(len(base_env.action_space.nvec))
+        a_max = int(max(base_env.action_space.nvec))
+        print(f"[INFO] env tls_count    : {n_tls}")
+        print(f"[INFO] env A_max        : {a_max} (per-TLS MultiDiscrete nvec)")
+    print("=" * 110)
 
-        avg_reward = total_reward / steps_per_episode
-        writer.add_scalar("Episode/MeanReward", avg_reward, ep)
+    env = DummyVecEnv([lambda: base_env])
 
-        # -----------------------------------------------------------
-        # Save model
-        # -----------------------------------------------------------
-        if ep % save_interval == 0:
-            save_path = os.path.join(log_dir, f"ppo_multi_tls_ep{ep}.zip")
-            model.save(save_path)
-            print(f"[INFO] Model saved at {save_path}")
+    model = PPO(
+        policy="MlpPolicy",
+        env=env,
+        learning_rate=learning_rate,
+        n_steps=n_steps,
+        batch_size=batch_size,
+        gamma=gamma,
+        gae_lambda=gae_lambda,
+        clip_range=clip_range,
+        ent_coef=ent_coef,
+        vf_coef=vf_coef,
+        max_grad_norm=max_grad_norm,
+        verbose=verbose,
+        tensorboard_log=log_dir,
+    )
 
-    # ---------------------------------------------------------------
-    # Wrap up
-    # ---------------------------------------------------------------
-    writer.close()
-    env.close()
-    print("[INFO] SUMO closed cleanly.")
-    print("✅ Training complete.")
-
-
-# ------------------------------------------------------------------------------------
-# Entry Point
-# ------------------------------------------------------------------------------------
-if __name__ == "__main__":
     try:
-        main()
+        steps_done = 0
+        while steps_done < total_timesteps:
+            steps_left = total_timesteps - steps_done
+            chunk = min(save_freq, steps_left)
+
+            print(f"[INFO] Learning chunk: {chunk} steps (progress {steps_done}/{total_timesteps})")
+            model.learn(
+                total_timesteps=chunk,
+                reset_num_timesteps=False,
+                tb_log_name=run_name,
+                progress_bar=False,
+            )
+
+            steps_done += chunk
+            ckpt_path = os.path.join(save_dir, f"{run_name}_steps_{steps_done}")
+            model.save(ckpt_path)
+            print(f"[INFO] Saved checkpoint: {ckpt_path}")
+
+        final_path = os.path.join(save_dir, f"{run_name}_final")
+        model.save(final_path)
+        print(f"[OK] Training complete. Final model saved: {final_path}")
+
     except KeyboardInterrupt:
-        print("Interrupt signal received, exiting cleanly...")
+        print("\n[WARN] KeyboardInterrupt received. Saving interrupt checkpoint...")
+        interrupt_path = os.path.join(save_dir, f"{run_name}_interrupt")
         try:
-            from traci import close as traci_close
-            traci_close(False)
+            model.save(interrupt_path)
+            print(f"[INFO] Saved interrupt checkpoint: {interrupt_path}")
+        except Exception as e:
+            print(f"[ERROR] Failed to save interrupt checkpoint: {e}")
+
+    finally:
+        try:
+            env.close()
         except Exception:
             pass
-        exit(0)
+
+
+if __name__ == "__main__":
+    main()
