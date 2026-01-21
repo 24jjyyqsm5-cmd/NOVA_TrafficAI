@@ -1,54 +1,103 @@
+# ============================================================
+# NOVA 2.0 — Shared PPO Multi-Intersection Traffic Control
+# ============================================================
+
+# ----------------------------
+# SUMO configuration
+# ----------------------------
 sumo:
-  binary: "C:/Program Files (x86)/Eclipse/Sumo/bin/sumo.exe"
-  config: "C:/Users/Alpa117636/Downloads/2025-09-22-15-39-59/2025-09-22-15-39-59/osm.sumocfg"
-  step_length: 1.0
-  max_steps: 10660
-  warmup_steps: 50
-  delay: 1
+  # Path to your SUMO config file (.sumocfg)
+  # IMPORTANT: This file already defines outputs and logs,
+  # so we do NOT duplicate duration-log flags in code.
+  config_file: "C:/Users/Alpa117636/Downloads/2025-09-22-15-39-59/2025-09-22-15-39-59/osm.sumocfg"
+
+  gui: false                 # true = sumo-gui, false = sumo
+  step_length: 1.0           # seconds per simulation step
+  delay: 0                   # real-time delay (0 = fastest)
+  teleport_time: -1          # disable teleporting
+
+  # Noise control (keeps final simulation summary)
   no_warnings: true
+  no_step_log: true
   ignore_route_errors: true
-  teleport_time: -1
-  verbose: true
 
+
+# ----------------------------
+# Training configuration
+# ----------------------------
 training:
-  seed: 42
-  episodes: 100
-  steps_per_episode: 5400
-  eval_interval: 10
-  save_interval: 1
-  num_envs: 1
+  algorithm: "PPO"
+  shared_policy: true        # parameter-shared MARL
+  max_tls: 24                # number of intersections to control
+  episode_seconds: 5400      
+  total_timesteps: 270000
+  save_freq: 5400
 
-ppo:
-  policy: "MlpPolicy"
-  learning_rate: 0.0003
-  n_steps: 4096
-  batch_size: 128
-  n_epochs: 10
-  gamma: 0.99
-  gae_lambda: 0.95
-  clip_range: 0.2
-  ent_coef: 0.02
-  ent_decay: true
-  vf_coef: 0.5
-  max_grad_norm: 0.5
-  normalize_advantage: true
+  # Optional explicit TLS list
+  # If empty or omitted, all TLS are discovered automatically
+  tls_ids: []
 
+
+# ----------------------------
+# Observation / state design
+# ----------------------------
+state:
+  # Switch from lane-padding to movement-bucket encoding:
+  # Approaches: N/S/E/W
+  # Movements:  Left/Through/Right
+  # -> 4 * 3 = 12 buckets
+  mode: "movement"
+
+  # 12 movement buckets (N/S/E/W × L/T/R)
+  movement_buckets: 12
+
+  # Per-bucket feature ordering:
+  # [queue_length_proxy, waiting_time_proxy, presence_flag]
+  features_per_bucket: 3
+
+  # Add phase context features to the end of the observation:
+  # [phase_index_norm, time_in_phase_norm]
+  include_phase_features: true
+
+  # NOTE:
+  # If true: strictly detector-derived values only (requires mapping)
+  # If false: you may compute queue/wait proxies from lane stats while mapping matures
+  detector_only: false
+
+
+# ----------------------------
+# Action / phase control
+# ----------------------------
+phase:
+  # HARD SAFETY CONSTRAINT
+  # Prevents flickering and emergency braking
+  min_green_seconds: 10
+
+  # Explicit yellow insertion timing (recommended range: 3–5s)
+  yellow_seconds: 4
+
+
+# ----------------------------
+# Reward design
+# ----------------------------
 reward:
-  wait: 1.0
-  queue: 0.1
-  smooth: 0.05
-  throughput: 0.003
+  # r_i = alpha * r_local_i + (1 - alpha) * r_global
+  alpha: 0.6                 # local vs global weighting
 
-observation:
-  feature_dim: 12
-  normalize: true
+  # Local reward weights
+  queue_w: 1.0               # penalty per stopped vehicle
+  wait_w: 0.02               # penalty per second of waiting
 
+
+# ----------------------------
+# Logging / output control
+# ----------------------------
 logging:
-  log_dir: "./runs_fast"
   tensorboard: true
-  save_freq: 1
-  print_freq: 50
+  log_dir: "./runs"
+  model_dir: "./models"
+  verbose: 1
 
-misc:
-  save_gif: false
-  debug: false
+#phase switch diagnostics
+  phase_switch_diagnostics: false
+  phase_switch_diag_every: 500
